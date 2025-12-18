@@ -714,70 +714,96 @@ def main():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
+        # Ищем финальный файл (после merge)
+        if not is_audio_only and not postprocessors_opts:
+            # Ищем .mp4 файл без .f в имени (финальный после merge)
+            for f in os.listdir(save_dir):
+                if f.endswith('.mp4') and '.f' not in f:
+                    downloaded_video_file = os.path.join(save_dir, f)
+                    break
+        
         # --- Блок вырезки части видео ---
-        if split_mode == 'cut' and downloaded_video_file and cut_segment:
-            print("\n=== Вырезка части видео ===")
-            start_time = cut_segment['start']
-            end_time = cut_segment.get('end')
+        if split_mode == 'cut' and cut_segment:
+            # Ищем видео файл если не нашли
+            if not downloaded_video_file:
+                for f in os.listdir(save_dir):
+                    if f.endswith(('.mp4', '.mkv', '.webm')) and '.f' not in f:
+                        downloaded_video_file = os.path.join(save_dir, f)
+                        break
             
-            if not end_time:
-                end_time = get_video_duration(downloaded_video_file)
-            
-            video_name = os.path.splitext(os.path.basename(downloaded_video_file))[0]
-            output_name = f'{video_name}_cut.mp4'
-            output_path = os.path.join(save_dir, output_name)
-            
-            print(f"Вырезаю: {start_time} - {end_time}")
-            
-            cmd = ['ffmpeg', '-y', '-ss', start_time]
-            if end_time:
-                cmd.extend(['-to', end_time])
-            cmd.extend(['-i', downloaded_video_file, '-c', 'copy', '-avoid_negative_ts', '1', output_path])
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
-            
-            if result.returncode == 0:
-                print(f"✓ Создан: {output_name}")
-                # Удаляем оригинал, оставляем вырезку
-                os.remove(downloaded_video_file)
+            if downloaded_video_file and os.path.exists(downloaded_video_file):
+                print("\n=== Вырезка части видео ===")
+                start_time = cut_segment['start']
+                end_time = cut_segment.get('end')
+                
+                if not end_time:
+                    end_time = get_video_duration(downloaded_video_file)
+                
+                video_name = os.path.splitext(os.path.basename(downloaded_video_file))[0]
+                output_name = f'{video_name}_cut.mp4'
+                output_path = os.path.join(save_dir, output_name)
+                
+                print(f"Вырезаю: {start_time} - {end_time}")
+                
+                cmd = ['ffmpeg', '-y', '-ss', start_time]
+                if end_time:
+                    cmd.extend(['-to', end_time])
+                cmd.extend(['-i', downloaded_video_file, '-c', 'copy', '-avoid_negative_ts', '1', output_path])
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
+                
+                if result.returncode == 0:
+                    print(f"✓ Создан: {output_name}")
+                    # Удаляем оригинал, оставляем вырезку
+                    os.remove(downloaded_video_file)
+                else:
+                    print(f"✗ Ошибка ffmpeg: {result.stderr[:200] if result.stderr else 'unknown'}")
             else:
-                print(f"✗ Ошибка ffmpeg")
+                print("✗ Видео файл не найден для вырезки")
 
         # --- Блок разделения на главы ---
-        if split_mode == 'chapters' and downloaded_video_file:
-            print("\n=== Разделение на главы ===")
-            segments = []
+        if split_mode == 'chapters':
+            # Ищем видео файл если не нашли
+            if not downloaded_video_file:
+                for f in os.listdir(save_dir):
+                    if f.endswith(('.mp4', '.mkv', '.webm')) and '.f' not in f:
+                        downloaded_video_file = os.path.join(save_dir, f)
+                        break
             
-            # Попытка авто-поиска глав
-            if video_info_for_formats:
-                caps = video_info_for_formats.get('chapters', [])
-                if caps:
-                    for i, c in enumerate(caps, 1):
-                        t_str = str(datetime.timedelta(seconds=int(c['start_time'])))
-                        segments.append({'start': t_str, 'end': None, 'name': c['title']})
-                else:
-                    segments = parse_chapters_from_description(video_info_for_formats.get('description', ''))
-            
-            if not segments:
-                print("Главы не найдены.")
-                if get_numeric_choice("Ввести вручную?", ["Да", "Нет"], True, 0) == 0:
-                    segments = manual_timecode_input()
-            
-            if segments:
-                if len(segments) > 1:
-                    sel_in = input("\nВыбрать сегменты (Enter=все): ").strip()
-                    if sel_in:
-                        inds = parse_chapter_selection(sel_in, len(segments))
-                        if inds: segments = [segments[i-1] for i in inds]
+            if downloaded_video_file and os.path.exists(downloaded_video_file):
+                print("\n=== Разделение на главы ===")
+                segments = []
                 
-                # Расчет конца сегментов
-                dur_str = get_video_duration(downloaded_video_file)
-                for i, s in enumerate(segments):
-                    if not s['end']:
-                        if i + 1 < len(segments): s['end'] = segments[i+1]['start']
-                        else: s['end'] = dur_str
+                # Попытка авто-поиска глав
+                if video_info_for_formats:
+                    caps = video_info_for_formats.get('chapters', [])
+                    if caps:
+                        for i, c in enumerate(caps, 1):
+                            t_str = str(datetime.timedelta(seconds=int(c['start_time'])))
+                            segments.append({'start': t_str, 'end': None, 'name': c['title']})
+                    else:
+                        segments = parse_chapters_from_description(video_info_for_formats.get('description', ''))
                 
-                split_video_by_segments(downloaded_video_file, segments, os.path.join(save_dir, "chapters"))
+                if not segments:
+                    print("Главы не найдены.")
+                    if get_numeric_choice("Ввести вручную?", ["Да", "Нет"], True, 0) == 0:
+                        segments = manual_timecode_input()
+                
+                if segments:
+                    if len(segments) > 1:
+                        sel_in = input("\nВыбрать сегменты (Enter=все): ").strip()
+                        if sel_in:
+                            inds = parse_chapter_selection(sel_in, len(segments))
+                            if inds: segments = [segments[i-1] for i in inds]
+                    
+                    # Расчет конца сегментов
+                    dur_str = get_video_duration(downloaded_video_file)
+                    for i, s in enumerate(segments):
+                        if not s['end']:
+                            if i + 1 < len(segments): s['end'] = segments[i+1]['start']
+                            else: s['end'] = dur_str
+                    
+                    split_video_by_segments(downloaded_video_file, segments, os.path.join(save_dir, "chapters"))
 
         # Освобождаем wake lock
         release_wake_lock()

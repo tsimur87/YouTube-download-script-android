@@ -535,67 +535,90 @@ def main():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
+        # Find final file (after merge)
+        if not is_audio_only and not postprocessors_opts:
+            for f in os.listdir(save_dir):
+                if f.endswith('.mp4') and '.f' not in f:
+                    downloaded_video_file = os.path.join(save_dir, f)
+                    break
+        
         # --- Cut video part ---
-        if split_mode == 'cut' and downloaded_video_file and cut_segment:
-            print("\n=== Cutting video part ===")
-            start_time = cut_segment['start']
-            end_time = cut_segment.get('end')
+        if split_mode == 'cut' and cut_segment:
+            if not downloaded_video_file:
+                for f in os.listdir(save_dir):
+                    if f.endswith(('.mp4', '.mkv', '.webm')) and '.f' not in f:
+                        downloaded_video_file = os.path.join(save_dir, f)
+                        break
             
-            if not end_time:
-                end_time = get_video_duration(downloaded_video_file)
-            
-            video_name = os.path.splitext(os.path.basename(downloaded_video_file))[0]
-            output_name = f'{video_name}_cut.mp4'
-            output_path = os.path.join(save_dir, output_name)
-            
-            print(f"Cutting: {start_time} - {end_time}")
-            
-            cmd = ['ffmpeg', '-y', '-ss', start_time]
-            if end_time:
-                cmd.extend(['-to', end_time])
-            cmd.extend(['-i', downloaded_video_file, '-c', 'copy', '-avoid_negative_ts', '1', output_path])
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
-            
-            if result.returncode == 0:
-                print(f"✓ Created: {output_name}")
-                os.remove(downloaded_video_file)
+            if downloaded_video_file and os.path.exists(downloaded_video_file):
+                print("\n=== Cutting video part ===")
+                start_time = cut_segment['start']
+                end_time = cut_segment.get('end')
+                
+                if not end_time:
+                    end_time = get_video_duration(downloaded_video_file)
+                
+                video_name = os.path.splitext(os.path.basename(downloaded_video_file))[0]
+                output_name = f'{video_name}_cut.mp4'
+                output_path = os.path.join(save_dir, output_name)
+                
+                print(f"Cutting: {start_time} - {end_time}")
+                
+                cmd = ['ffmpeg', '-y', '-ss', start_time]
+                if end_time:
+                    cmd.extend(['-to', end_time])
+                cmd.extend(['-i', downloaded_video_file, '-c', 'copy', '-avoid_negative_ts', '1', output_path])
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
+                
+                if result.returncode == 0:
+                    print(f"✓ Created: {output_name}")
+                    os.remove(downloaded_video_file)
+                else:
+                    print(f"✗ ffmpeg error: {result.stderr[:200] if result.stderr else 'unknown'}")
             else:
-                print(f"✗ ffmpeg error")
+                print("✗ Video file not found for cutting")
 
         # --- Split by chapters ---
-        if split_mode == 'chapters' and downloaded_video_file:
-            print("\n=== Splitting by chapters ===")
-            segments = []
+        if split_mode == 'chapters':
+            if not downloaded_video_file:
+                for f in os.listdir(save_dir):
+                    if f.endswith(('.mp4', '.mkv', '.webm')) and '.f' not in f:
+                        downloaded_video_file = os.path.join(save_dir, f)
+                        break
             
-            if video_info_for_formats:
-                caps = video_info_for_formats.get('chapters', [])
-                if caps:
-                    for i, c in enumerate(caps, 1):
-                        t_str = str(datetime.timedelta(seconds=int(c['start_time'])))
-                        segments.append({'start': t_str, 'end': None, 'name': c['title']})
-                else:
-                    segments = parse_chapters_from_description(video_info_for_formats.get('description', ''))
-            
-            if not segments:
-                print("Chapters not found.")
-                if get_numeric_choice("Enter manually?", ["Yes", "No"], True, 0) == 0:
-                    segments = manual_timecode_input()
-            
-            if segments:
-                if len(segments) > 1:
-                    sel_in = input("\nSelect segments (Enter=all): ").strip()
-                    if sel_in:
-                        inds = parse_chapter_selection(sel_in, len(segments))
-                        if inds: segments = [segments[i-1] for i in inds]
+            if downloaded_video_file and os.path.exists(downloaded_video_file):
+                print("\n=== Splitting by chapters ===")
+                segments = []
                 
-                dur_str = get_video_duration(downloaded_video_file)
-                for i, s in enumerate(segments):
-                    if not s['end']:
-                        if i + 1 < len(segments): s['end'] = segments[i+1]['start']
-                        else: s['end'] = dur_str
+                if video_info_for_formats:
+                    caps = video_info_for_formats.get('chapters', [])
+                    if caps:
+                        for i, c in enumerate(caps, 1):
+                            t_str = str(datetime.timedelta(seconds=int(c['start_time'])))
+                            segments.append({'start': t_str, 'end': None, 'name': c['title']})
+                    else:
+                        segments = parse_chapters_from_description(video_info_for_formats.get('description', ''))
                 
-                split_video_by_segments(downloaded_video_file, segments, os.path.join(save_dir, "chapters"))
+                if not segments:
+                    print("Chapters not found.")
+                    if get_numeric_choice("Enter manually?", ["Yes", "No"], True, 0) == 0:
+                        segments = manual_timecode_input()
+                
+                if segments:
+                    if len(segments) > 1:
+                        sel_in = input("\nSelect segments (Enter=all): ").strip()
+                        if sel_in:
+                            inds = parse_chapter_selection(sel_in, len(segments))
+                            if inds: segments = [segments[i-1] for i in inds]
+                    
+                    dur_str = get_video_duration(downloaded_video_file)
+                    for i, s in enumerate(segments):
+                        if not s['end']:
+                            if i + 1 < len(segments): s['end'] = segments[i+1]['start']
+                            else: s['end'] = dur_str
+                    
+                    split_video_by_segments(downloaded_video_file, segments, os.path.join(save_dir, "chapters"))
 
         # Release wake lock
         release_wake_lock()
