@@ -245,5 +245,3 @@ termux-setup-storage
 ## Лицензия
 
 MIT
-
-00ю32ю12 00ю35ю40

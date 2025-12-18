@@ -8,8 +8,9 @@ import signal
 import atexit
 import traceback
 import datetime
-import gc  # Garbage Collector для очистки памяти
-import time # Для пауз
+import gc
+import time
+import shutil
 from pathlib import Path
 
 
@@ -648,8 +649,14 @@ def main():
 
         save_dir_base = get_android_download_path()
         save_dir = os.path.join(save_dir_base, download_title)
-        try: os.makedirs(save_dir, exist_ok=True)
-        except: save_dir = save_dir_base
+        temp_dir = os.path.join(save_dir, 'temp')
+        
+        try: 
+            os.makedirs(save_dir, exist_ok=True)
+            os.makedirs(temp_dir, exist_ok=True)
+        except: 
+            save_dir = save_dir_base
+            temp_dir = save_dir
         
         print(f"\nСохранение в: {save_dir}")
 
@@ -657,10 +664,10 @@ def main():
         if is_playlist_download:
             output_tmpl = f'%(playlist_index)0{len(str(total_items))}d - %(title)s'
         
-        # Основные опции БЕЗ cookies - они могут ломать запрос
+        # Скачиваем в temp папку
         ydl_opts = {
             'format': selected_format,
-            'outtmpl': os.path.join(save_dir, output_tmpl + '.%(ext)s'),
+            'outtmpl': os.path.join(temp_dir, output_tmpl + '.%(ext)s'),
             'retries': 10,
             'fragment_retries': 20,
             'continuedl': True,
@@ -689,13 +696,11 @@ def main():
                 filepath = d.get('filepath') or d.get('filename')
                 if not filepath: return
                 
-                # Короткая пауза для освобождения ресурсов
                 time.sleep(0.5) 
 
                 if postprocessors_opts and any(p.get('preferredcodec') == 'mp3' for p in postprocessors_opts):
                     base, _ = os.path.splitext(filepath)
                     mp3_filepath = base + ".mp3"
-                    # Логика переименования опущена для краткости, но файлы добавляются
                     downloaded_mp3_files.append(mp3_filepath)
                     print(f"\nГотово: {os.path.basename(mp3_filepath)}")
                 else:
@@ -714,21 +719,20 @@ def main():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        # Ищем финальный файл (после merge)
+        # Ищем финальный файл в temp (после merge)
         if not is_audio_only and not postprocessors_opts:
-            # Ищем .mp4 файл без .f в имени (финальный после merge)
-            for f in os.listdir(save_dir):
+            for f in os.listdir(temp_dir):
                 if f.endswith('.mp4') and '.f' not in f:
-                    downloaded_video_file = os.path.join(save_dir, f)
+                    downloaded_video_file = os.path.join(temp_dir, f)
                     break
         
         # --- Блок вырезки части видео ---
         if split_mode == 'cut' and cut_segment:
-            # Ищем видео файл если не нашли
+            # Ищем видео файл в temp
             if not downloaded_video_file:
-                for f in os.listdir(save_dir):
+                for f in os.listdir(temp_dir):
                     if f.endswith(('.mp4', '.mkv', '.webm')) and '.f' not in f:
-                        downloaded_video_file = os.path.join(save_dir, f)
+                        downloaded_video_file = os.path.join(temp_dir, f)
                         break
             
             if downloaded_video_file and os.path.exists(downloaded_video_file):
@@ -741,7 +745,7 @@ def main():
                 
                 video_name = os.path.splitext(os.path.basename(downloaded_video_file))[0]
                 output_name = f'{video_name}_cut.mp4'
-                output_path = os.path.join(save_dir, output_name)
+                output_path = os.path.join(save_dir, output_name)  # В корень папки
                 
                 print(f"Вырезаю: {start_time} - {end_time}")
                 
@@ -754,20 +758,25 @@ def main():
                 
                 if result.returncode == 0:
                     print(f"✓ Создан: {output_name}")
-                    # Удаляем оригинал, оставляем вырезку
-                    os.remove(downloaded_video_file)
                 else:
                     print(f"✗ Ошибка ffmpeg: {result.stderr[:200] if result.stderr else 'unknown'}")
             else:
                 print("✗ Видео файл не найден для вырезки")
+            
+            # Очищаем temp папку
+
+            try:
+                shutil.rmtree(temp_dir)
+                print("🗑 Временные файлы удалены")
+            except: pass
 
         # --- Блок разделения на главы ---
-        if split_mode == 'chapters':
-            # Ищем видео файл если не нашли
+        elif split_mode == 'chapters':
+            # Ищем видео файл в temp
             if not downloaded_video_file:
-                for f in os.listdir(save_dir):
+                for f in os.listdir(temp_dir):
                     if f.endswith(('.mp4', '.mkv', '.webm')) and '.f' not in f:
-                        downloaded_video_file = os.path.join(save_dir, f)
+                        downloaded_video_file = os.path.join(temp_dir, f)
                         break
             
             if downloaded_video_file and os.path.exists(downloaded_video_file):
@@ -803,7 +812,28 @@ def main():
                             if i + 1 < len(segments): s['end'] = segments[i+1]['start']
                             else: s['end'] = dur_str
                     
-                    split_video_by_segments(downloaded_video_file, segments, os.path.join(save_dir, "chapters"))
+                    # Сохраняем главы в корень папки
+                    split_video_by_segments(downloaded_video_file, segments, save_dir)
+            
+            # Очищаем temp папку
+
+            try:
+                shutil.rmtree(temp_dir)
+                print("🗑 Временные файлы удалены")
+            except: pass
+        
+        # Если просто скачивание без обработки - перемещаем из temp в корень
+        elif not split_mode and temp_dir != save_dir:
+
+            for f in os.listdir(temp_dir):
+                src = os.path.join(temp_dir, f)
+                dst = os.path.join(save_dir, f)
+                if os.path.isfile(src) and '.f' not in f:
+                    shutil.move(src, dst)
+            # Удаляем temp
+            try:
+                shutil.rmtree(temp_dir)
+            except: pass
 
         # Освобождаем wake lock
         release_wake_lock()

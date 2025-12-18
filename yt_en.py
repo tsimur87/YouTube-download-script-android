@@ -10,6 +10,7 @@ import traceback
 import datetime
 import gc
 import time
+import shutil
 from pathlib import Path
 
 
@@ -472,8 +473,14 @@ def main():
 
         save_dir_base = get_android_download_path()
         save_dir = os.path.join(save_dir_base, download_title)
-        try: os.makedirs(save_dir, exist_ok=True)
-        except: save_dir = save_dir_base
+        temp_dir = os.path.join(save_dir, 'temp')
+        
+        try: 
+            os.makedirs(save_dir, exist_ok=True)
+            os.makedirs(temp_dir, exist_ok=True)
+        except: 
+            save_dir = save_dir_base
+            temp_dir = save_dir
         
         print(f"\nSaving to: {save_dir}")
 
@@ -481,9 +488,10 @@ def main():
         if is_playlist_download:
             output_tmpl = f'%(playlist_index)0{len(str(total_items))}d - %(title)s'
         
+        # Download to temp folder
         ydl_opts = {
             'format': selected_format,
-            'outtmpl': os.path.join(save_dir, output_tmpl + '.%(ext)s'),
+            'outtmpl': os.path.join(temp_dir, output_tmpl + '.%(ext)s'),
             'retries': 10,
             'fragment_retries': 20,
             'continuedl': True,
@@ -535,19 +543,19 @@ def main():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        # Find final file (after merge)
+        # Find final file in temp (after merge)
         if not is_audio_only and not postprocessors_opts:
-            for f in os.listdir(save_dir):
+            for f in os.listdir(temp_dir):
                 if f.endswith('.mp4') and '.f' not in f:
-                    downloaded_video_file = os.path.join(save_dir, f)
+                    downloaded_video_file = os.path.join(temp_dir, f)
                     break
         
         # --- Cut video part ---
         if split_mode == 'cut' and cut_segment:
             if not downloaded_video_file:
-                for f in os.listdir(save_dir):
+                for f in os.listdir(temp_dir):
                     if f.endswith(('.mp4', '.mkv', '.webm')) and '.f' not in f:
-                        downloaded_video_file = os.path.join(save_dir, f)
+                        downloaded_video_file = os.path.join(temp_dir, f)
                         break
             
             if downloaded_video_file and os.path.exists(downloaded_video_file):
@@ -560,7 +568,7 @@ def main():
                 
                 video_name = os.path.splitext(os.path.basename(downloaded_video_file))[0]
                 output_name = f'{video_name}_cut.mp4'
-                output_path = os.path.join(save_dir, output_name)
+                output_path = os.path.join(save_dir, output_name)  # To root folder
                 
                 print(f"Cutting: {start_time} - {end_time}")
                 
@@ -573,18 +581,23 @@ def main():
                 
                 if result.returncode == 0:
                     print(f"✓ Created: {output_name}")
-                    os.remove(downloaded_video_file)
                 else:
                     print(f"✗ ffmpeg error: {result.stderr[:200] if result.stderr else 'unknown'}")
             else:
                 print("✗ Video file not found for cutting")
+            
+            # Clean temp folder
+            try:
+                shutil.rmtree(temp_dir)
+                print("🗑 Temp files deleted")
+            except: pass
 
         # --- Split by chapters ---
-        if split_mode == 'chapters':
+        elif split_mode == 'chapters':
             if not downloaded_video_file:
-                for f in os.listdir(save_dir):
+                for f in os.listdir(temp_dir):
                     if f.endswith(('.mp4', '.mkv', '.webm')) and '.f' not in f:
-                        downloaded_video_file = os.path.join(save_dir, f)
+                        downloaded_video_file = os.path.join(temp_dir, f)
                         break
             
             if downloaded_video_file and os.path.exists(downloaded_video_file):
@@ -618,7 +631,26 @@ def main():
                             if i + 1 < len(segments): s['end'] = segments[i+1]['start']
                             else: s['end'] = dur_str
                     
-                    split_video_by_segments(downloaded_video_file, segments, os.path.join(save_dir, "chapters"))
+                    # Save chapters to root folder
+                    split_video_by_segments(downloaded_video_file, segments, save_dir)
+            
+            # Clean temp folder
+            try:
+                shutil.rmtree(temp_dir)
+                print("🗑 Temp files deleted")
+            except: pass
+        
+        # If just download without processing - move from temp to root
+        elif not split_mode and temp_dir != save_dir:
+            for f in os.listdir(temp_dir):
+                src = os.path.join(temp_dir, f)
+                dst = os.path.join(save_dir, f)
+                if os.path.isfile(src) and '.f' not in f:
+                    shutil.move(src, dst)
+            # Delete temp
+            try:
+                shutil.rmtree(temp_dir)
+            except: pass
 
         # Release wake lock
         release_wake_lock()
